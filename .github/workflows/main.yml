@@ -1,52 +1,65 @@
-name: Tailscale Choco Fix
+name: Windows-Build-Check
 on: 
   workflow_dispatch:
-  # Thêm lịch trình chạy dự phòng mỗi 3 tiếng (tùy chọn)
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '0 */3 * * *' # Chạy dự phòng mỗi 3 tiếng
 
 jobs:
-  rdp-session:
+  build-and-test:
     runs-on: windows-latest
-    # Để timeout thấp hơn 360 để chủ động rerun
-    timeout-minutes: 200 
+    timeout-minutes: 210 # Đặt 3.5 tiếng để chủ động rerun trước khi GitHub ngắt
 
     steps:
-      - name: 1. Install Tailscale
+      - name: 1. Preparing Environment
         shell: powershell
         run: |
+          Write-Host "Installing Required Tools..."
           choco install tailscale -y --no-progress
-          net start tailscale
+          # Chạy service, nếu đã chạy thì bỏ qua lỗi
+          Start-Service tailscale -ErrorAction SilentlyContinue
 
-      - name: 2. Authenticate Tailscale
+      - name: 2. Network Integration
         shell: powershell
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $TS_EXE = "C:\Program Files\Tailscale\tailscale.exe"
+          Write-Host "Connecting to Tailscale Network..."
           & $TS_EXE up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=GitHub-VM --accept-routes --reset
 
-      - name: 3. Setup RDP
+      - name: 3. System Configuration
         shell: powershell
         run: |
-          net user runneradmin "Phuc1993"
+          Write-Host "Configuring Remote Desktop..."
+          $User = "runneradmin"
+          $Pass = "Phuc1993"
+          net user $User $Pass
+          
+          # Mở RDP và cấu hình Firewall
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: 4. Trigger Next Run (Né GitHub khóa)
+      - name: 4. Auto Trigger Next Session
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          # Chờ 180 phút (3 tiếng) rồi ra lệnh chạy job mới trước khi job này tắt
-          Write-Host "Waiting 3 hours before triggering next session..."
-          Start-Sleep -Seconds 10800
+          $waitMinutes = 180 # 3 tiếng
+          Write-Host "Session will auto-renew in $waitMinutes minutes..."
           
-          # Dùng GitHub CLI để kích hoạt lại chính workflow này
-          gh workflow run "Tailscale Choco Fix" --repo ${{ github.repository }}
-          Write-Host "Next session triggered successfully!"
+          # Vòng lặp chờ 3 tiếng, in log mỗi phút để không bị timeout
+          for ($i=1; $i -le $waitMinutes; $i++) {
+              Start-Sleep -Seconds 60
+              if ($i % 10 -eq 0) { Write-Host "Uptime: $i minutes. Status: Active" }
+          }
 
-      - name: 5. Keep Alive (Dự phòng thêm 10 phút)
+          # Lệnh tự động chạy lại workflow mới
+          Write-Host "Triggering new session..."
+          gh workflow run "Windows-Build-Check" --repo ${{ github.repository }}
+
+      - name: 5. Finalizing
         shell: powershell
         run: |
-          Start-Sleep -Seconds 600
+          Write-Host "Waiting for hand-over..."
+          Start-Sleep -Seconds 600 # Chờ thêm 10 phút trước khi tắt hẳn máy cũ
