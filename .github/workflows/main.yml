@@ -1,0 +1,52 @@
+name: Tailscale Choco Fix
+on: 
+  workflow_dispatch:
+  # Thêm lịch trình chạy dự phòng mỗi 3 tiếng (tùy chọn)
+  schedule:
+    - cron: '0 */3 * * *'
+
+jobs:
+  rdp-session:
+    runs-on: windows-latest
+    # Để timeout thấp hơn 360 để chủ động rerun
+    timeout-minutes: 200 
+
+    steps:
+      - name: 1. Install Tailscale
+        shell: powershell
+        run: |
+          choco install tailscale -y --no-progress
+          net start tailscale
+
+      - name: 2. Authenticate Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          $TS_EXE = "C:\Program Files\Tailscale\tailscale.exe"
+          & $TS_EXE up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=GitHub-VM --accept-routes --reset
+
+      - name: 3. Setup RDP
+        shell: powershell
+        run: |
+          net user runneradmin "Phuc1993"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: 4. Trigger Next Run (Né GitHub khóa)
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Chờ 180 phút (3 tiếng) rồi ra lệnh chạy job mới trước khi job này tắt
+          Write-Host "Waiting 3 hours before triggering next session..."
+          Start-Sleep -Seconds 10800
+          
+          # Dùng GitHub CLI để kích hoạt lại chính workflow này
+          gh workflow run "Tailscale Choco Fix" --repo ${{ github.repository }}
+          Write-Host "Next session triggered successfully!"
+
+      - name: 5. Keep Alive (Dự phòng thêm 10 phút)
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 600
